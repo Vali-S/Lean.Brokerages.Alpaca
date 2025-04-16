@@ -123,7 +123,7 @@ namespace QuantConnect.Brokerages.Alpaca
                 return;
             }
             _isInitialized = true;
-            ValidateSubscription();
+            //ValidateSubscription();
 
             SecurityKey tradingSecretKey = null;
             if (!string.IsNullOrEmpty(accessToken))
