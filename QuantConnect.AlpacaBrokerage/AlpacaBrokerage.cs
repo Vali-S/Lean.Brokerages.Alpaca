@@ -1,4 +1,4 @@
-﻿/*
+/*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
  * Lean Algorithmic Trading Engine v2.0. Copyright 2014 QuantConnect Corporation.
  *
@@ -155,6 +155,7 @@ namespace QuantConnect.Brokerages.Alpaca
             if (_orderProvider != null)
             {
                 _orderStreamingClient.OnTradeUpdate += (message) => _messageHandler.HandleNewMessage(message);
+                WireStreamingClientEvents(_orderStreamingClient);
             }
             _messageHandler = new(HandleTradeUpdate);
             _symbolMapper = new AlpacaBrokerageSymbolMapper(_tradingClient);
@@ -179,18 +180,9 @@ namespace QuantConnect.Brokerages.Alpaca
                 // streaming options
                 _optionsStreamingClient = new AlpacaStreamingClientWrapper(secretKey, SecurityType.Option);
 
-                foreach (var streamingClient in new IStreamingClient[] { _cryptoStreamingClient, _optionsStreamingClient, _equityStreamingClient, _orderStreamingClient })
+                foreach (var streamingClient in new IStreamingClient[] { _cryptoStreamingClient, _optionsStreamingClient, _equityStreamingClient })
                 {
-                    streamingClient.Connected += (obj) => StreamingClient_Connected(streamingClient, obj);
-                    streamingClient.OnWarning += (obj) => StreamingClient_OnWarning(streamingClient, obj);
-                    streamingClient.SocketOpened += () => StreamingClient_SocketOpened(streamingClient);
-                    streamingClient.SocketClosed += () => StreamingClient_SocketClosed(streamingClient);
-                    streamingClient.OnError += (obj) => StreamingClient_OnError(streamingClient, obj);
-
-                    if (streamingClient is AlpacaStreamingClientWrapper wrapper)
-                    {
-                        wrapper.EnviromentFailure += (message) => Log.Trace($"AlpacaBrokerage.Initialize(): {message}");
-                    }
+                    WireStreamingClientEvents(streamingClient);
                 }
 
                 _subscriptionManager = new EventBasedDataQueueHandlerSubscriptionManager();
@@ -208,14 +200,28 @@ namespace QuantConnect.Brokerages.Alpaca
             }
         }
 
+        private void WireStreamingClientEvents(IStreamingClient streamingClient)
+        {
+            streamingClient.Connected += (obj) => StreamingClient_Connected(streamingClient, obj);
+            streamingClient.OnWarning += (obj) => StreamingClient_OnWarning(streamingClient, obj);
+            streamingClient.SocketOpened += () => StreamingClient_SocketOpened(streamingClient);
+            streamingClient.SocketClosed += () => StreamingClient_SocketClosed(streamingClient);
+            streamingClient.OnError += (obj) => StreamingClient_OnError(streamingClient, obj);
+
+            if (streamingClient is AlpacaStreamingClientWrapper wrapper)
+            {
+                wrapper.EnviromentFailure += (message) => Log.Trace($"AlpacaBrokerage.Initialize(): {message}");
+            }
+        }
+
         private void StreamingClient_OnError(IStreamingClient client, Exception obj)
         {
-            Log.Trace($"{nameof(StreamingClient_OnError)}({client.GetType().Name}): {obj}");
+            Log.Trace($"{nameof(StreamingClient_OnError)}({client.GetStreamingClientName()}): {obj}");
         }
 
         private void StreamingClient_SocketClosed(IStreamingClient client)
         {
-            Log.Trace($"{nameof(StreamingClient_SocketClosed)}({client.GetType().Name}): SocketClosed");
+            Log.Trace($"{nameof(StreamingClient_SocketClosed)}({client.GetStreamingClientName()}): SocketClosed");
             if (_connected)
             {
                 _connected = false;
@@ -227,17 +233,17 @@ namespace QuantConnect.Brokerages.Alpaca
 
         private void StreamingClient_SocketOpened(IStreamingClient client)
         {
-            Log.Trace($"{nameof(StreamingClient_SocketOpened)}({client.GetType().Name}): SocketOpened");
+            Log.Trace($"{nameof(StreamingClient_SocketOpened)}({client.GetStreamingClientName()}): SocketOpened");
         }
 
         private void StreamingClient_OnWarning(IStreamingClient client, string obj)
         {
-            Log.Trace($"{nameof(StreamingClient_OnWarning)}({client.GetType().Name}): {obj}");
+            Log.Trace($"{nameof(StreamingClient_OnWarning)}({client.GetStreamingClientName()}): {obj}");
         }
 
         private void StreamingClient_Connected(IStreamingClient client, AuthStatus obj)
         {
-            Log.Trace($"{nameof(StreamingClient_Connected)}({client.GetType().Name}): {obj}");
+            Log.Trace($"{nameof(StreamingClient_Connected)}({client.GetStreamingClientName()}): {obj}");
         }
 
         #region Brokerage
@@ -396,10 +402,8 @@ namespace QuantConnect.Brokerages.Alpaca
         {
             try
             {
-                if (Log.DebuggingEnabled)
-                {
-                    Log.Debug($"{nameof(AlpacaBrokerage)}.{nameof(HandleTradeUpdate)}: {obj}");
-                }
+                // TODO: Revert to Log.Debug when issue #28 is resolved
+                Log.Trace($"{nameof(AlpacaBrokerage)}.{nameof(HandleTradeUpdate)}: {obj}");
 
                 var brokerageOrderId = obj.Order.OrderId.ToString();
                 var newLeanOrderStatus = GetOrderStatus(obj.Event);
@@ -625,7 +629,7 @@ namespace QuantConnect.Brokerages.Alpaca
                 var authorizedStatus = streamingClient.ConnectAndAuthenticateAsync().SynchronouslyAwaitTaskResult();
                 if (authorizedStatus != AuthStatus.Authorized)
                 {
-                    throw new InvalidOperationException($"Connect(): Failed to connect to {streamingClient.GetType().Name}");
+                    throw new InvalidOperationException($"Connect(): Failed to connect to {streamingClient.GetStreamingClientName()}");
                 }
             }
             _connected = true;
@@ -646,14 +650,18 @@ namespace QuantConnect.Brokerages.Alpaca
 
                 if (!IsConnected)
                 {
-                    RunReconnectionLogic(60);
+                    RunReconnectionLogic(30);
                 }
                 else
                 {
-                    // resubscribe
-                    var symbols = _subscriptionManager.GetSubscribedSymbols();
-                    Unsubscribe(symbols);
-                    Subscribe(symbols);
+                    // if we are used as a brokerage ignore data queue handler updates
+                    if (_subscriptionManager != null)
+                    {
+                        // resubscribe
+                        var symbols = _subscriptionManager.GetSubscribedSymbols();
+                        Unsubscribe(symbols);
+                        Subscribe(symbols);
+                    }
                     // let consumers know we are reconnected, avoid lean killing us
                     OnMessage(new BrokerageMessageEvent(BrokerageMessageType.Reconnect, "Reconnected", "Brokerage Reconnected"));
                 }
